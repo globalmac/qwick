@@ -1,4 +1,4 @@
-package soda
+package qwick
 
 import (
 	"bytes"
@@ -10,13 +10,13 @@ import (
 )
 
 func TestBasic(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "soda_test")
+	tmpDir, err := os.MkdirTemp("", "qwick_test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbPath := filepath.Join(tmpDir, "test.soda")
+	dbPath := filepath.Join(tmpDir, "test.qwick")
 
 	// 1. Создание и сборка
 	tree := New()
