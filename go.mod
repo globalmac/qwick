@@ -1,4 +1,4 @@
-module soda
+module qwick
 
 go 1.25
 
