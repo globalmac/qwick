@@ -1,4 +1,4 @@
-module qwick
+module github.com/globalmac/qwick
 
 go 1.25
 
