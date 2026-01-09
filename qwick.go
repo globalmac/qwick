@@ -1,4 +1,4 @@
-package soda
+package qwick
 
 import (
 	"bytes"
