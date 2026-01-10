@@ -112,7 +112,7 @@ func (db *MMAPDB) Close() error {
 }
 
 // Get выполняет поиск ключа и возвращает сырые данные (указывает прямо в mmap).
-func (db *MMAPDB) Get(key []byte) ([]byte, bool) {
+func (db *MMAPDB) GetRaw(key []byte) ([]byte, bool) {
 	idx, ok := db.findIndex(key)
 	if !ok {
 		return nil, false
@@ -121,9 +121,9 @@ func (db *MMAPDB) Get(key []byte) ([]byte, bool) {
 	return db.mdata[voff : voff+uint64(vlen)], true
 }
 
-// GetDecompressed возвращает распакованное значение в dst.
-func (db *MMAPDB) GetDecompressed(key []byte, dst []byte) ([]byte, bool, error) {
-	val, ok := db.Get(key)
+// Find возвращает распакованное значение в dst.
+func (db *MMAPDB) Find(key []byte, dst []byte) ([]byte, bool, error) {
+	val, ok := db.GetRaw(key)
 	if !ok {
 		return nil, false, nil
 	}
