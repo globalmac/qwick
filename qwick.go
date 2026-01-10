@@ -15,9 +15,9 @@ import (
 	art "github.com/plar/go-adaptive-radix-tree/v2"
 )
 
-// Константы формата файла SODA
+// Константы формата файла QWICK
 const (
-	FileMagic   = "SODA0001"
+	FileMagic   = "QWICK2026"
 	FileVersion = 1
 	headerSize  = 64
 )
