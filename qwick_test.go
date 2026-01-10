@@ -38,22 +38,22 @@ func TestBasic(t *testing.T) {
 
 	// 3. Получение данных (Get)
 	dst := make([]byte, 1024)
-	val, ok, err := db.GetDecompressed([]byte("key1"), dst)
+	val, ok, err := db.Find([]byte("key1"), dst)
 	if !ok || err != nil || string(val) != "value1" {
 		t.Errorf("Ошибка Get key1: получено %q, ok %v, err %v", val, ok, err)
 	}
 
-	val, ok, err = db.GetDecompressed([]byte("key2"), dst)
+	val, ok, err = db.Find([]byte("key2"), dst)
 	if !ok || err != nil || string(val) != "value2" {
 		t.Errorf("Ошибка Get key2: получено %q, ok %v, err %v", val, ok, err)
 	}
 
-	val, ok, err = db.GetDecompressed([]byte("key3"), dst)
+	val, ok, err = db.Find([]byte("key3"), dst)
 	if !ok || err != nil || string(val) != "123" {
 		t.Errorf("Ошибка Get key3: получено %q, ok %v, err %v", val, ok, err)
 	}
 
-	_, ok = db.Get([]byte("non-existent"))
+	_, ok = db.GetRaw([]byte("non-existent"))
 	if ok {
 		t.Error("Get для несуществующего ключа должен возвращать false")
 	}
@@ -80,7 +80,7 @@ func TestBasic(t *testing.T) {
 }
 
 func TestCompression(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "soda_comp")
+	tmpDir, err := os.MkdirTemp("", "qwick_comp")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestCompression(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dbPath := filepath.Join(tmpDir, tt.name+".soda")
+			dbPath := filepath.Join(tmpDir, tt.name+".qwick")
 			tree := New()
 			data := bytes.Repeat([]byte("test_data_"), 100)
 			tree.Insert([]byte("k1"), data)
@@ -114,19 +114,19 @@ func TestCompression(t *testing.T) {
 			}
 			defer db.Close()
 
-			val, ok := db.Get([]byte("k1"))
+			val, ok := db.GetRaw([]byte("k1"))
 			if !ok {
 				t.Fatal("Ключ не найден")
 			}
 			_ = val
 
 			// Получение распакованных данных
-			decVal, ok, err := db.GetDecompressed([]byte("k1"), nil)
+			decVal, ok, err := db.Find([]byte("k1"), nil)
 			if err != nil {
-				t.Fatalf("Ошибка GetDecompressed: %v", err)
+				t.Fatalf("Ошибка Find: %v", err)
 			}
 			if !ok {
-				t.Fatal("Ключ не найден в GetDecompressed")
+				t.Fatal("Ключ не найден в Find")
 			}
 			if !bytes.Equal(decVal, data) {
 				t.Errorf("Данные не совпадают: ожидалось len %d, получено len %d", len(data), len(decVal))
@@ -134,10 +134,10 @@ func TestCompression(t *testing.T) {
 
 			// Тест с маленьким буфером
 			smallDst := make([]byte, 10)
-			_, _, err = db.GetDecompressed([]byte("k1"), smallDst)
+			_, _, err = db.Find([]byte("k1"), smallDst)
 			if err == nil && tt.opts.Compression != compNone {
 				// S2 и Zstd могут вернуть ошибку, если буфер слишком мал (или просто вернуть срез, если сжатия нет)
-				// Реализация GetDecompressed в soda.go:
+				// Реализация Find в qwick.go:
 				// если db.compression == compNone { return val, true, nil }
 				// Так что если compNone, это нормально.
 			}
@@ -162,7 +162,7 @@ func TestErrors(t *testing.T) {
 	// Тест открытия некорректного файла
 	tmpFile, _ := os.CreateTemp("", "invalid_db")
 	defer os.Remove(tmpFile.Name())
-	tmpFile.Write([]byte("NOTSODA!"))
+	tmpFile.Write([]byte("NOTQWICK!"))
 	tmpFile.Close()
 
 	_, err = Open(tmpFile.Name())
@@ -173,14 +173,14 @@ func TestErrors(t *testing.T) {
 
 func TestExtra(t *testing.T) {
 	// 1. Уровни Zstd
-	tmpDir, _ := os.MkdirTemp("", "soda_extra")
+	tmpDir, _ := os.MkdirTemp("", "qwick_extra")
 	defer os.RemoveAll(tmpDir)
 
 	tree := New()
 	tree.Insert([]byte("k"), []byte("v"))
 
 	for _, lvl := range []int{2, 3} {
-		path := filepath.Join(tmpDir, fmt.Sprintf("lvl%d.soda", lvl))
+		path := filepath.Join(tmpDir, fmt.Sprintf("lvl%d.qwick", lvl))
 		err := BuildWithOptions(tree, path, BuildOptions{Compression: compZstd, ZstdLevel: lvl})
 		if err != nil {
 			t.Errorf("Ошибка BuildWithOptions уровень %d: %v", lvl, err)
@@ -188,8 +188,8 @@ func TestExtra(t *testing.T) {
 	}
 
 	// 2. Открытие слишком короткого файла
-	shortFile := filepath.Join(tmpDir, "short.soda")
-	os.WriteFile(shortFile, []byte("SODA"), 0644)
+	shortFile := filepath.Join(tmpDir, "short.qwick")
+	os.WriteFile(shortFile, []byte("QWICK"), 0644)
 	_, err := Open(shortFile)
 	if err == nil || err.Error() != "слишком короткий файл" {
 		t.Errorf("Ожидалась ошибка 'слишком короткий файл', получено %v", err)
@@ -197,9 +197,9 @@ func TestExtra(t *testing.T) {
 }
 
 func TestSizeCutover(t *testing.T) {
-	tmpDir, _ := os.MkdirTemp("", "soda_cutover")
+	tmpDir, _ := os.MkdirTemp("", "qwick_cutover")
 	defer os.RemoveAll(tmpDir)
-	dbPath := filepath.Join(tmpDir, "cutover.soda")
+	dbPath := filepath.Join(tmpDir, "cutover.qwick")
 
 	tree := New()
 	smallData := []byte("small")
@@ -219,21 +219,21 @@ func TestSizeCutover(t *testing.T) {
 	defer db.Close()
 
 	dst := make([]byte, 1000)
-	val, ok, err := db.GetDecompressed([]byte("small"), dst)
+	val, ok, err := db.Find([]byte("small"), dst)
 	if !ok || !bytes.Equal(val, smallData) {
 		t.Errorf("несоответствие данных для 'small'")
 	}
 
-	val, ok, err = db.GetDecompressed([]byte("large"), dst)
+	val, ok, err = db.Find([]byte("large"), dst)
 	if !ok || !bytes.Equal(val, largeData) {
 		t.Errorf("несоответствие данных для 'large': ожидалось len %d, получено len %d, компрессия в БД: %d", len(largeData), len(val), db.compression)
 	}
 }
 func TestErrorsMore(t *testing.T) {
 	// 1. Открытие файла с неверной версией
-	tmpDir, _ := os.MkdirTemp("", "soda_err")
+	tmpDir, _ := os.MkdirTemp("", "qwick_err")
 	defer os.RemoveAll(tmpDir)
-	dbPath := filepath.Join(tmpDir, "ver.soda")
+	dbPath := filepath.Join(tmpDir, "ver.qwick")
 
 	tree := New()
 	tree.Insert([]byte("a"), []byte("b"))
@@ -255,9 +255,9 @@ func TestErrorsMore(t *testing.T) {
 	}
 }
 func BenchmarkGet(b *testing.B) {
-	tmpDir, _ := os.MkdirTemp("", "soda_bench")
+	tmpDir, _ := os.MkdirTemp("", "qwick_bench")
 	defer os.RemoveAll(tmpDir)
-	dbPath := filepath.Join(tmpDir, "bench.soda")
+	dbPath := filepath.Join(tmpDir, "bench.qwick")
 
 	tree := New()
 	key := []byte("key")
@@ -270,14 +270,14 @@ func BenchmarkGet(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		db.Get(key)
+		db.GetRaw(key)
 	}
 }
 
 func BenchmarkBuild(b *testing.B) {
-	tmpDir, _ := os.MkdirTemp("", "soda_bench_build")
+	tmpDir, _ := os.MkdirTemp("", "qwick_bench_build")
 	defer os.RemoveAll(tmpDir)
-	dbPath := filepath.Join(tmpDir, "bench_build.soda")
+	dbPath := filepath.Join(tmpDir, "bench_build.qwick")
 
 	tree := New()
 	for i := 0; i < 1000; i++ {
