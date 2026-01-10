@@ -17,7 +17,7 @@ import (
 
 // Константы формата файла QWICK
 const (
-	FileMagic   = "QWICK2026"
+	FileMagic   = "QWICK\xAB\xCD\xEF"
 	FileVersion = 1
 	headerSize  = 64
 )
