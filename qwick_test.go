@@ -79,6 +79,50 @@ func TestBasic(t *testing.T) {
 	}
 }
 
+func TestFindPrefix(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "qwick_find_prefix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test.qwick")
+
+	tree := New()
+	tree.Insert([]byte("a1"), []byte("v1"))
+	tree.Insert([]byte("a2"), []byte("v2"))
+	tree.Insert([]byte("b1"), []byte("v3"))
+
+	err = BuildWithOptions(tree, dbPath, BuildOptions{Compression: compS2})
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	db, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("Open failed: %v", err)
+	}
+	defer db.Close()
+
+	results := make(map[string]string)
+	dst := make([]byte, 100)
+	err = db.FindPrefix([]byte("a"), dst, func(k, v []byte) bool {
+		results[string(k)] = string(v)
+		return true
+	})
+
+	if err != nil {
+		t.Fatalf("FindPrefix failed: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Errorf("Ожидалось 2 результата, получено %d", len(results))
+	}
+	if results["a1"] != "v1" || results["a2"] != "v2" {
+		t.Errorf("Неверные данные: %v", results)
+	}
+}
+
 func TestCompression(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "qwick_comp")
 	if err != nil {

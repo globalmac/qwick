@@ -127,26 +127,29 @@ func (db *MMAPDB) Find(key []byte, dst []byte) ([]byte, bool, error) {
 	if !ok {
 		return nil, false, nil
 	}
+	out, err := db.decode(val, dst)
+	return out, true, err
+}
+
+func (db *MMAPDB) decode(val []byte, dst []byte) ([]byte, error) {
 	switch db.compression {
 	case compZstd:
-		out, err := zstdDec.DecodeAll(val, dst[:0])
-		return out, true, err
+		return zstdDec.DecodeAll(val, dst[:0])
 	case compS2:
-		out, err := s2.Decode(dst[:0], val)
-		return out, true, err
+		return s2.Decode(dst[:0], val)
 	case 0:
 		// Авто-режим: пробуем S2 первым, потом Zstd.
 		out, err := s2.Decode(dst[:0], val)
 		if err == nil {
-			return out, true, nil
+			return out, nil
 		}
 		out, err = zstdDec.DecodeAll(val, dst[:0])
 		if err == nil {
-			return out, true, nil
+			return out, nil
 		}
-		return val, true, nil
+		return val, nil
 	default:
-		return val, true, nil
+		return val, nil
 	}
 }
 
@@ -162,6 +165,26 @@ func (db *MMAPDB) Prefix(prefix []byte, cb func(key, val []byte) bool) {
 			break
 		}
 	}
+}
+
+// FindPrefix похож на Prefix, но распаковывает значения.
+func (db *MMAPDB) FindPrefix(prefix []byte, dst []byte, cb func(key, val []byte) bool) error {
+	idx, _ := db.findIndex(prefix)
+	for i := idx; i < db.num; i++ {
+		k := db.getKeySlice(i)
+		if !bytes.HasPrefix(k, prefix) {
+			break
+		}
+		valRaw := db.getValSlice(i)
+		valDec, err := db.decode(valRaw, dst)
+		if err != nil {
+			return err
+		}
+		if !cb(k, valDec) {
+			break
+		}
+	}
+	return nil
 }
 
 // findIndex выполняет бинарный поиск индекса по ключу.
