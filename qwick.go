@@ -153,8 +153,8 @@ func (db *MMAPDB) decode(val []byte, dst []byte) ([]byte, error) {
 	}
 }
 
-// Prefix перебирает все ключи, начинающиеся с prefix.
-func (db *MMAPDB) Prefix(prefix []byte, cb func(key, val []byte) bool) {
+// PrefixRaw перебирает все ключи, начинающиеся с prefix.
+func (db *MMAPDB) PrefixRaw(prefix []byte, cb func(key, val []byte) bool) {
 	idx, _ := db.findIndex(prefix)
 	for i := idx; i < db.num; i++ {
 		k := db.getKeySlice(i)
@@ -167,8 +167,8 @@ func (db *MMAPDB) Prefix(prefix []byte, cb func(key, val []byte) bool) {
 	}
 }
 
-// FindPrefix похож на Prefix, но распаковывает значения.
-func (db *MMAPDB) FindPrefix(prefix []byte, dst []byte, cb func(key, val []byte) bool) error {
+// Prefix похож на PrefixRaw, но распаковывает значения.
+func (db *MMAPDB) Prefix(prefix []byte, dst []byte, cb func(key, val []byte) bool) error {
 	idx, _ := db.findIndex(prefix)
 	for i := idx; i < db.num; i++ {
 		k := db.getKeySlice(i)

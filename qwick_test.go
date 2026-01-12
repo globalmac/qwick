@@ -60,7 +60,7 @@ func TestBasic(t *testing.T) {
 
 	// 5. Поиск по префиксу
 	count := 0
-	db.Prefix([]byte("key"), func(k, v []byte) bool {
+	db.PrefixRaw([]byte("key"), func(k, v []byte) bool {
 		count++
 		return true
 	})
@@ -70,7 +70,7 @@ func TestBasic(t *testing.T) {
 
 	// Тест остановки итерации
 	count = 0
-	db.Prefix([]byte("key"), func(k, v []byte) bool {
+	db.PrefixRaw([]byte("key"), func(k, v []byte) bool {
 		count++
 		return false
 	})
@@ -79,8 +79,8 @@ func TestBasic(t *testing.T) {
 	}
 }
 
-func TestFindPrefix(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "qwick_find_prefix")
+func TestPrefixUnpacked(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "qwick_prefix")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestFindPrefix(t *testing.T) {
 	tree.Insert([]byte("a2"), []byte("v2"))
 	tree.Insert([]byte("b1"), []byte("v3"))
 
-	err = BuildWithOptions(tree, dbPath, BuildOptions{Compression: compS2})
+	err = Build(tree, dbPath)
 	if err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
@@ -106,13 +106,13 @@ func TestFindPrefix(t *testing.T) {
 
 	results := make(map[string]string)
 	dst := make([]byte, 100)
-	err = db.FindPrefix([]byte("a"), dst, func(k, v []byte) bool {
+	err = db.Prefix([]byte("a"), dst, func(k, v []byte) bool {
 		results[string(k)] = string(v)
 		return true
 	})
 
 	if err != nil {
-		t.Fatalf("FindPrefix failed: %v", err)
+		t.Fatalf("Prefix failed: %v", err)
 	}
 
 	if len(results) != 2 {
@@ -298,6 +298,92 @@ func TestErrorsMore(t *testing.T) {
 		dbVer.Close()
 	}
 }
+func TestPrefixAdvanced(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "qwick_prefix_adv")
+	defer os.RemoveAll(tmpDir)
+
+	tree := New()
+	entries := []struct {
+		k, v string
+	}{
+		{"apple", "fruit1"},
+		{"apply", "action"},
+		{"banana", "fruit2"},
+		{"box", "container"},
+		{"boy", "child"},
+	}
+	for _, e := range entries {
+		tree.Insert([]byte(e.k), []byte(e.v))
+	}
+
+	tests := []struct {
+		name        string
+		prefix      string
+		compression uint32
+		wantKeys    []string
+	}{
+		{"NoComp_App", "app", compNone, []string{"apple", "apply"}},
+		{"NoComp_Bo", "bo", compNone, []string{"box", "boy"}},
+		{"NoComp_Empty", "", compNone, []string{"apple", "apply", "banana", "box", "boy"}},
+		{"NoComp_None", "zzz", compNone, []string{}},
+		{"Zstd_App", "app", compZstd, []string{"apple", "apply"}},
+		{"S2_Bo", "bo", compS2, []string{"box", "boy"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dbPath := filepath.Join(tmpDir, tt.name+".qwick")
+			BuildWithOptions(tree, dbPath, BuildOptions{Compression: tt.compression})
+			db, _ := Open(dbPath)
+			defer db.Close()
+
+			// Test PrefixRaw
+			var gotRaw []string
+			db.PrefixRaw([]byte(tt.prefix), func(k, v []byte) bool {
+				gotRaw = append(gotRaw, string(k))
+				return true
+			})
+			if !equalStrings(gotRaw, tt.wantKeys) {
+				t.Errorf("PrefixRaw %s: got %v, want %v", tt.prefix, gotRaw, tt.wantKeys)
+			}
+
+			// Test Prefix (with decode)
+			var gotDec []string
+			dst := make([]byte, 100)
+			db.Prefix([]byte(tt.prefix), dst, func(k, v []byte) bool {
+				gotDec = append(gotDec, string(k))
+				// Verify value is correct
+				expectedVal := ""
+				for _, e := range entries {
+					if e.k == string(k) {
+						expectedVal = e.v
+						break
+					}
+				}
+				if string(v) != expectedVal {
+					t.Errorf("Prefix key %s: got val %s, want %s", k, v, expectedVal)
+				}
+				return true
+			})
+			if !equalStrings(gotDec, tt.wantKeys) {
+				t.Errorf("Prefix %s: got %v, want %v", tt.prefix, gotDec, tt.wantKeys)
+			}
+		})
+	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func BenchmarkGet(b *testing.B) {
 	tmpDir, _ := os.MkdirTemp("", "qwick_bench")
 	defer os.RemoveAll(tmpDir)
