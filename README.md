@@ -29,10 +29,10 @@ package main
 
 import (
 
-"encoding/json"
-"fmt"
-
-"github.com/globalmac/qwick"
+	"encoding/json"
+	"fmt"
+	
+	"github.com/globalmac/qwick"
 )
 
 func main() {
@@ -90,11 +90,11 @@ func main() {
 package main
 
 import (
-
-"encoding/json"
-"fmt"
-
-"github.com/globalmac/qwick"
+	
+	"encoding/json"
+	"fmt"
+	
+	"github.com/globalmac/qwick"
 )
 
 func main() {
@@ -143,9 +143,9 @@ func main() {
 package main
 
 import (
-  "fmt"
-
-  "github.com/globalmac/qwick"
+	  "fmt"
+	
+	  "github.com/globalmac/qwick"
 )
 
 func main() {
