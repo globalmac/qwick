@@ -1,7 +1,13 @@
 package qwick
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -13,6 +19,8 @@ import (
 	"github.com/klauspost/compress/s2"
 	"github.com/klauspost/compress/zstd"
 	art "github.com/plar/go-adaptive-radix-tree/v2"
+	"golang.org/x/crypto/hkdf"
+	"golang.org/x/crypto/poly1305"
 )
 
 // Константы формата файла QWICK
@@ -20,6 +28,7 @@ const (
 	FileMagic   = "QWICK\xAB\xCD\xEF"
 	FileVersion = 1
 	headerSize  = 64
+	chunkSize   = 1 << 20 // 1MB
 )
 
 // Типы сжатия
@@ -354,7 +363,7 @@ func BuildWithOptions(tree art.Tree, path string, opts BuildOptions) error {
 
 	_, _ = f.Seek(0, io.SeekStart)
 	hdrBuf := make([]byte, headerSize)
-	copy(hdrBuf[0:8], []byte(FileMagic))
+	copy(hdrBuf[0:8], FileMagic)
 	binary.LittleEndian.PutUint32(hdrBuf[8:12], FileVersion)
 	binary.LittleEndian.PutUint64(hdrBuf[16:24], num)
 	binary.LittleEndian.PutUint64(hdrBuf[24:32], offIndex)
@@ -371,4 +380,202 @@ func BuildWithOptions(tree art.Tree, path string, opts BuildOptions) error {
 // Build — обёртка над BuildWithOptions с параметрами по умолчанию.
 func Build(tree art.Tree, path string) error {
 	return BuildWithOptions(tree, path, BuildOptions{Compression: 0, ZstdLevel: 1, SizeCutover: 256})
+}
+
+// ZipEncrypt сжимает и шифрует файл srcPath, записывая результат в dstPath с использованием masterKey.
+// Входной файл читается через mmap для максимальной производительности.
+func ZipEncrypt(dstPath, srcPath string, masterKey []byte) error {
+	if len(masterKey) != 32 {
+		return errors.New("key must be 32 bytes")
+	}
+
+	sf, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+
+	fi, err := sf.Stat()
+	if err != nil {
+		return err
+	}
+	srcSize := fi.Size()
+
+	df, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer df.Close()
+	bw := bufio.NewWriter(df)
+	defer bw.Flush()
+
+	// Используем mmap для быстрого чтения входного файла, если он не пустой
+	var data []byte
+	if srcSize > 0 {
+		m, err := mmap.Map(sf, mmap.RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer m.Unmap()
+		data = m
+	}
+
+	block, err := aes.NewCipher(masterKey)
+	if err != nil {
+		return err
+	}
+
+	var (
+		nonce      = make([]byte, 16)
+		polyKey    [32]byte
+		mac        [16]byte
+		sizeBuf    [4]byte
+		compressed []byte
+	)
+
+	for off := int64(0); off < srcSize; off += chunkSize {
+		end := off + chunkSize
+		if end > srcSize {
+			end = srcSize
+		}
+
+		chunk := data[off:end]
+
+		// 1. Сжатие
+		compressed = s2.Encode(compressed[:0], chunk)
+
+		// 2. Генерация случайного nonce для каждого чанка
+		if _, err := rand.Read(nonce); err != nil {
+			return err
+		}
+
+		// 3. Генерация ключа для Poly1305
+		h := hkdf.New(sha256.New, masterKey, nonce, []byte("poly1305"))
+		if _, err := io.ReadFull(h, polyKey[:]); err != nil {
+			return err
+		}
+
+		// 4. Шифрование (AES-CTR)
+		stream := cipher.NewCTR(block, nonce)
+		stream.XORKeyStream(compressed, compressed)
+
+		// 5. Вычисление MAC
+		poly1305.Sum(&mac, compressed, &polyKey)
+
+		// 6. Запись чанка: Nonce (16) + Size (4) + Ciphertext (N) + MAC (16)
+		if _, err := bw.Write(nonce); err != nil {
+			return err
+		}
+		binary.LittleEndian.PutUint32(sizeBuf[:], uint32(len(compressed)))
+		if _, err := bw.Write(sizeBuf[:]); err != nil {
+			return err
+		}
+		if _, err := bw.Write(compressed); err != nil {
+			return err
+		}
+		if _, err := bw.Write(mac[:]); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// UnzipDecrypt расшифровывает и распаковывает файл srcPath, записывая результат в dstPath с использованием masterKey.
+func UnzipDecrypt(dstPath, srcPath string, masterKey []byte) error {
+	if len(masterKey) != 32 {
+		return errors.New("key must be 32 bytes")
+	}
+
+	sf, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer sf.Close()
+
+	fi, err := sf.Stat()
+	if err != nil {
+		return err
+	}
+	srcSize := fi.Size()
+
+	df, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer df.Close()
+	bw := bufio.NewWriter(df)
+	defer bw.Flush()
+
+	var data []byte
+	if srcSize > 0 {
+		m, err := mmap.Map(sf, mmap.RDONLY, 0)
+		if err != nil {
+			return err
+		}
+		defer m.Unmap()
+		data = m
+	}
+
+	block, err := aes.NewCipher(masterKey)
+	if err != nil {
+		return err
+	}
+
+	var (
+		polyKey [32]byte
+		mac     [16]byte
+		decoded []byte
+		off     int64
+	)
+
+	for off < srcSize {
+		// Читаем заголовок чанка: Nonce(16) + Size(4)
+		if off+20 > srcSize {
+			return errors.New("unexpected EOF: header")
+		}
+		nonce := data[off : off+16]
+		size := binary.LittleEndian.Uint32(data[off+16 : off+20])
+		off += 20
+
+		// Читаем Ciphertext + MAC
+		if off+int64(size)+16 > srcSize {
+			return errors.New("unexpected EOF: data")
+		}
+		ciphertext := data[off : off+int64(size)]
+		providedMac := data[off+int64(size) : off+int64(size)+16]
+		off += int64(size) + 16
+
+		// 1. Проверка MAC
+		h := hkdf.New(sha256.New, masterKey, nonce, []byte("poly1305"))
+		if _, err := io.ReadFull(h, polyKey[:]); err != nil {
+			return err
+		}
+		poly1305.Sum(&mac, ciphertext, &polyKey)
+		if subtle.ConstantTimeCompare(mac[:], providedMac) != 1 {
+			return errors.New("authentication failed")
+		}
+
+		// 2. Дешифрование
+		stream := cipher.NewCTR(block, nonce)
+		// Мы можем дешифровать прямо в том же буфере, если бы он не был mmap (RDONLY).
+		// Но нам все равно нужно место для распакованных данных.
+		// Используем ciphertext как вход для XORKeyStream, но результат пишем в промежуточный буфер
+		// или переиспользуем буфер для дешифрования.
+		decrypted := make([]byte, len(ciphertext))
+		stream.XORKeyStream(decrypted, ciphertext)
+
+		// 3. Распаковка
+		decoded, err = s2.Decode(decoded[:0], decrypted)
+		if err != nil {
+			return err
+		}
+
+		// 4. Запись в файл
+		if _, err := bw.Write(decoded); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }

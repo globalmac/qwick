@@ -419,3 +419,78 @@ func BenchmarkBuild(b *testing.B) {
 		Build(tree, dbPath)
 	}
 }
+
+func TestZipUnzip(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "qwick_zip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	srcPath := filepath.Join(tmpDir, "src.txt")
+	encPath := filepath.Join(tmpDir, "enc.bin")
+	decPath := filepath.Join(tmpDir, "dec.txt")
+
+	// Тестовые данные (чуть больше 1 МБ, чтобы проверить несколько чанков)
+	data := bytes.Repeat([]byte("Hello, Qwick! Encryption and Compression test. "), 30000)
+	err = os.WriteFile(srcPath, data, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+
+	// 1. Шифруем
+	err = ZipEncrypt(encPath, srcPath, key)
+	if err != nil {
+		t.Fatalf("ZipEncrypt failed: %v", err)
+	}
+
+	// 2. Расшифровываем
+	err = UnzipDecrypt(decPath, encPath, key)
+	if err != nil {
+		t.Fatalf("UnzipDecrypt failed: %v", err)
+	}
+
+	// 3. Проверяем результат
+	decData, err := os.ReadFile(decPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(data, decData) {
+		t.Error("Decrypted data does not match original data")
+	}
+
+	// 4. Проверяем с неправильным ключом
+	wrongKey := make([]byte, 32)
+	wrongKey[0] = 0xFF
+	err = UnzipDecrypt(filepath.Join(tmpDir, "bad.txt"), encPath, wrongKey)
+	if err == nil {
+		t.Error("UnzipDecrypt should fail with wrong key")
+	} else {
+		t.Logf("Expected error with wrong key: %v", err)
+	}
+
+	// 5. Проверка пустого файла
+	emptySrc := filepath.Join(tmpDir, "empty.txt")
+	emptyEnc := filepath.Join(tmpDir, "empty.enc")
+	emptyDec := filepath.Join(tmpDir, "empty.dec")
+	os.WriteFile(emptySrc, []byte{}, 0644)
+
+	err = ZipEncrypt(emptyEnc, emptySrc, key)
+	if err != nil {
+		t.Fatalf("ZipEncrypt empty file failed: %v", err)
+	}
+	err = UnzipDecrypt(emptyDec, emptyEnc, key)
+	if err != nil {
+		t.Fatalf("UnzipDecrypt empty file failed: %v", err)
+	}
+	emptyData, _ := os.ReadFile(emptyDec)
+	if len(emptyData) != 0 {
+		t.Error("Empty file decryption should result in empty file")
+	}
+}

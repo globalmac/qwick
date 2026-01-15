@@ -183,7 +183,7 @@ func main() {
 	// ... вставка данных ...
 
 	opts := qwick.BuildOptions{
-		Compression: 1,    // 0: Auto, 1: Zstd, 2: S2 (Snappy), 3: None
+		Compression: 1,    // 1: Zstd, 2: S2, 3: None
 		ZstdLevel:   3,    // Уровень сжатия для Zstd
 		SizeCutover: 128,  // Не сжимать значения меньше 128 байт
 	}
@@ -192,4 +192,43 @@ func main() {
 }
 ```
 
+#### 5. Дополнительное сжатие + шифрование (S2 + AES-256-CTR + Poly1305)
 
+Для чувствительных и больших БД, Вы можете использовать сжатие S2 + AES-256-CTR + Poly1305
+
+```go
+package main
+
+import (
+  "crypto/rand"
+  "encoding/base64"
+  "fmt"
+  "log"
+
+  "github.com/globalmac/qwick"
+)
+
+func main() {
+
+  key := make([]byte, 32)
+  rand.Read(key)
+  keyRaw := base64.RawStdEncoding.EncodeToString(key)
+
+  fmt.Println("Ключ:", keyRaw)
+
+  // 1. Шифруем (сжатие s2 + шифрование AES-CTR + аутентификация Poly1305)
+  err := qwick.ZipEncrypt("file.qwick.enc", "file.qwick", key)
+  if err != nil {
+    log.Fatalf("ZipEncrypt ошибка: %v", err)
+  }
+
+  keyPlain, _ := base64.RawStdEncoding.DecodeString(keyRaw)
+
+  // 2. Расшифровываем (проверка целостности + дешифрование + декомпрессия)
+  err = qwick.UnzipDecrypt("file.qwick", "file.qwick.enc", keyPlain)
+  if err != nil {
+    log.Fatalf("UnzipDecrypt ошибка: %v", err)
+  }
+
+}
+```
