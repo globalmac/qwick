@@ -103,6 +103,19 @@ func Open(path string) (*MMAPDB, error) {
 	hdr.ValueFmt = binary.LittleEndian.Uint32(m[40:44])
 	hdr.Compression = binary.LittleEndian.Uint32(m[44:48])
 
+	// Проверка границ индекса
+	indexTotalSize := hdr.NumEntries * indexEntrySize
+	if hdr.OffIndex > uint64(len(m)) || indexTotalSize > uint64(len(m)) || hdr.OffIndex+indexTotalSize > uint64(len(m)) {
+		_ = m.Unmap()
+		return nil, errors.New("некорректный размер индекса или смещение")
+	}
+
+	// Проверка корректности типа сжатия
+	if hdr.Compression > compS2 {
+		_ = m.Unmap()
+		return nil, fmt.Errorf("неподдерживаемый тип сжатия: %d", hdr.Compression)
+	}
+
 	db := &MMAPDB{
 		mdata:       m,
 		hdr:         hdr,
@@ -126,8 +139,11 @@ func (db *MMAPDB) GetRaw(key []byte) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	_, _, voff, vlen := db.readIndex(idx)
-	return db.mdata[voff : voff+uint64(vlen)], true
+	v := db.getValSlice(idx)
+	if v == nil {
+		return nil, false
+	}
+	return v, true
 }
 
 // Find возвращает распакованное значение в dst.
@@ -167,10 +183,14 @@ func (db *MMAPDB) PrefixRaw(prefix []byte, cb func(key, val []byte) bool) {
 	idx, _ := db.findIndex(prefix)
 	for i := idx; i < db.num; i++ {
 		k := db.getKeySlice(i)
-		if !bytes.HasPrefix(k, prefix) {
+		if k == nil || !bytes.HasPrefix(k, prefix) {
 			break
 		}
-		if !cb(k, db.getValSlice(i)) {
+		v := db.getValSlice(i)
+		if v == nil {
+			break
+		}
+		if !cb(k, v) {
 			break
 		}
 	}
@@ -181,10 +201,13 @@ func (db *MMAPDB) Prefix(prefix []byte, dst []byte, cb func(key, val []byte) boo
 	idx, _ := db.findIndex(prefix)
 	for i := idx; i < db.num; i++ {
 		k := db.getKeySlice(i)
-		if !bytes.HasPrefix(k, prefix) {
+		if k == nil || !bytes.HasPrefix(k, prefix) {
 			break
 		}
 		valRaw := db.getValSlice(i)
+		if valRaw == nil {
+			break
+		}
 		valDec, err := db.decode(valRaw, dst)
 		if err != nil {
 			return err
@@ -202,6 +225,10 @@ func (db *MMAPDB) findIndex(key []byte) (uint64, bool) {
 	for lo < hi {
 		mid := (lo + hi) >> 1
 		k := db.getKeySlice(mid)
+		if k == nil {
+			// Поврежденный индекс
+			return 0, false
+		}
 		cmp := bytes.Compare(k, key)
 		if cmp == 0 {
 			return mid, true
@@ -225,11 +252,17 @@ func (db *MMAPDB) readIndex(i uint64) (koff uint64, klen uint32, voff uint64, vl
 
 func (db *MMAPDB) getKeySlice(i uint64) []byte {
 	koff, klen, _, _ := db.readIndex(i)
+	if koff > uint64(len(db.mdata)) || uint64(klen) > uint64(len(db.mdata)) || koff+uint64(klen) > uint64(len(db.mdata)) {
+		return nil
+	}
 	return db.mdata[koff : koff+uint64(klen)]
 }
 
 func (db *MMAPDB) getValSlice(i uint64) []byte {
 	_, _, voff, vlen := db.readIndex(i)
+	if voff > uint64(len(db.mdata)) || uint64(vlen) > uint64(len(db.mdata)) || voff+uint64(vlen) > uint64(len(db.mdata)) {
+		return nil
+	}
 	return db.mdata[voff : voff+uint64(vlen)]
 }
 

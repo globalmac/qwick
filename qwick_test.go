@@ -384,6 +384,79 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+func TestPanicReproduction(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "qwick_panic")
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "panic.qwick")
+
+	// Создаем минимально валидный заголовок, но с некорректными смещениями
+	hdr := make([]byte, 64)
+	copy(hdr[0:8], FileMagic)
+	binary.LittleEndian.PutUint32(hdr[8:12], FileVersion)
+	binary.LittleEndian.PutUint64(hdr[16:24], 1)           // NumEntries
+	binary.LittleEndian.PutUint64(hdr[24:32], 64)          // OffIndex
+	binary.LittleEndian.PutUint64(hdr[32:40], 10000000000) // OffBlobs (далеко за пределами файла)
+
+	// Добавляем одну запись индекса
+	idx := make([]byte, 24)
+	binary.LittleEndian.PutUint64(idx[0:8], 10000000000) // koff за пределами
+	binary.LittleEndian.PutUint32(idx[8:12], 10)         // klen
+	binary.LittleEndian.PutUint64(idx[12:20], 10000000010)
+	binary.LittleEndian.PutUint32(idx[20:24], 10)
+
+	f, _ := os.Create(dbPath)
+	f.Write(hdr)
+	f.Write(idx)
+	f.Close()
+
+	db, err := Open(dbPath)
+	if err != nil {
+		// Если Open уже возвращает ошибку - это хорошо (значит мы уже пофиксили или он частично валидирует)
+		return
+	}
+	defer db.Close()
+
+	// Это должно было вызвать панику до фикса
+	defer func() {
+		if r := recover(); r != nil {
+			t.Errorf("Паника в GetRaw: %v", r)
+		}
+	}()
+	db.GetRaw([]byte("test"))
+}
+
+func TestCorruptedDB(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "qwick_corrupt")
+	defer os.RemoveAll(tmpDir)
+	dbPath := filepath.Join(tmpDir, "corrupt.qwick")
+
+	t.Run("InvalidCompression", func(t *testing.T) {
+		hdr := make([]byte, 64)
+		copy(hdr[0:8], FileMagic)
+		binary.LittleEndian.PutUint32(hdr[8:12], FileVersion)
+		binary.LittleEndian.PutUint32(hdr[44:48], 99) // Невалидное сжатие
+		os.WriteFile(dbPath, hdr, 0644)
+		_, err := Open(dbPath)
+		if err == nil || !bytes.Contains([]byte(err.Error()), []byte("неподдерживаемый тип сжатия")) {
+			t.Errorf("Ожидалась ошибка сжатия, получено: %v", err)
+		}
+	})
+
+	t.Run("IndexOutOfBounds", func(t *testing.T) {
+		hdr := make([]byte, 64)
+		copy(hdr[0:8], FileMagic)
+		binary.LittleEndian.PutUint32(hdr[8:12], FileVersion)
+		binary.LittleEndian.PutUint64(hdr[16:24], 100) // 100 записей
+		binary.LittleEndian.PutUint64(hdr[24:32], 64)  // Смещение 64
+		// Общий размер должен быть 64 + 100*24 = 2464, а файл всего 64
+		os.WriteFile(dbPath, hdr, 0644)
+		_, err := Open(dbPath)
+		if err == nil || !bytes.Contains([]byte(err.Error()), []byte("некорректный размер индекса")) {
+			t.Errorf("Ожидалась ошибка индекса, получено: %v", err)
+		}
+	})
+}
+
 func BenchmarkGet(b *testing.B) {
 	tmpDir, _ := os.MkdirTemp("", "qwick_bench")
 	defer os.RemoveAll(tmpDir)
